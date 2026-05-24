@@ -3,6 +3,7 @@ use constant_time_eq::constant_time_eq;
 use js_sys::Uint8Array;
 use pbkdf2::pbkdf2_hmac;
 use sha2::Sha256;
+use std::sync::OnceLock;
 use wasm_bindgen::{JsCast, JsValue};
 use wasm_bindgen_futures::JsFuture;
 use web_sys::{Crypto, CryptoKey, SubtleCrypto};
@@ -136,24 +137,28 @@ pub fn generate_totp_secret() -> Result<String, AppError> {
     Ok(base32_encode(&secret.to_vec()))
 }
 
+
+
+/// Lazily-initialized HMAC-SHA1 algorithm object.
+/// Created once per isolate; reused for every HMAC-SHA1 operation.
+fn hmac_sha1_algorithm() -> &'static js_sys::Object {
+    static ALGORITHM: OnceLock<js_sys::Object> = OnceLock::new();
+    ALGORITHM.get_or_init(|| {
+        let obj = js_sys::Object::new();
+        js_sys::Reflect::set(&obj, &JsValue::from_str("name"), &JsValue::from_str("HMAC"))
+            .expect("set HMAC algorithm name");
+        js_sys::Reflect::set(&obj, &JsValue::from_str("hash"), &JsValue::from_str("SHA-1"))
+            .expect("set HMAC hash");
+        obj
+    })
+}
+
 /// Computes HMAC-SHA1 using Web Crypto API.
+/// Uses a cached algorithm object to avoid per-call JS object allocation.
 async fn hmac_sha1(key: &[u8], data: &[u8]) -> Result<Vec<u8>, AppError> {
     let subtle = subtle_crypto()?;
 
-    // Create algorithm object for HMAC with SHA-1
-    let algorithm = js_sys::Object::new();
-    js_sys::Reflect::set(
-        &algorithm,
-        &JsValue::from_str("name"),
-        &JsValue::from_str("HMAC"),
-    )
-    .map_err(|e| AppError::Crypto(format!("Failed to set algorithm name: {:?}", e)))?;
-    js_sys::Reflect::set(
-        &algorithm,
-        &JsValue::from_str("hash"),
-        &JsValue::from_str("SHA-1"),
-    )
-    .map_err(|e| AppError::Crypto(format!("Failed to set hash: {:?}", e)))?;
+    let algorithm = hmac_sha1_algorithm();
 
     // Import the key
     let key_array = Uint8Array::new_from_slice(key);
@@ -161,7 +166,7 @@ async fn hmac_sha1(key: &[u8], data: &[u8]) -> Result<Vec<u8>, AppError> {
 
     let crypto_key = JsFuture::from(
         subtle
-            .import_key_with_object("raw", &key_array, &algorithm, false, &key_usages)
+            .import_key_with_object("raw", &key_array, algorithm, false, &key_usages)
             .map_err(|e| AppError::Crypto(format!("HMAC import_key failed: {:?}", e)))?,
     )
     .await

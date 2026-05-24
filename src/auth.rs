@@ -6,13 +6,30 @@ use constant_time_eq::constant_time_eq;
 use jsonwebtoken::{decode, Algorithm, DecodingKey, Validation};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use worker::Env;
 
 use crate::db;
 use crate::error::AppError;
 
 pub(crate) const JWT_VALIDATION_LEEWAY_SECS: u64 = 60;
+
+/// Cached JWT validation configuration – built once, reused for every request.
+fn cached_jwt_validation() -> &'static Validation {
+    static VALIDATION: OnceLock<Validation> = OnceLock::new();
+    VALIDATION.get_or_init(|| {
+        let mut required_spec_claims = HashSet::with_capacity(1);
+        required_spec_claims.insert("exp".to_string());
+
+        let mut validation = Validation::new(Algorithm::HS256);
+        validation.required_spec_claims = required_spec_claims;
+        validation.leeway = JWT_VALIDATION_LEEWAY_SECS;
+        validation.validate_exp = true;
+        validation.validate_nbf = true;
+        validation.algorithms = vec![Algorithm::HS256];
+        validation
+    })
+}
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Claims {
@@ -28,17 +45,8 @@ pub struct Claims {
     pub amr: Vec<String>,
 }
 
-pub(crate) fn jwt_validation() -> Validation {
-    let mut required_spec_claims = HashSet::new();
-    required_spec_claims.insert("exp".to_string());
-
-    let mut validation = Validation::new(Algorithm::HS256);
-    validation.required_spec_claims = required_spec_claims;
-    validation.leeway = JWT_VALIDATION_LEEWAY_SECS;
-    validation.validate_exp = true;
-    validation.validate_nbf = true;
-    validation.algorithms = vec![Algorithm::HS256];
-    validation
+pub(crate) fn jwt_validation() -> &'static Validation {
+    cached_jwt_validation()
 }
 
 /// AuthUser extractor - provides (user_id, email) tuple
@@ -68,10 +76,11 @@ impl FromRequestParts<Arc<Env>> for Claims {
             .ok_or_else(|| AppError::Unauthorized("Missing or invalid token".to_string()))?;
 
         let secret = state.secret("JWT_SECRET")?;
+        let secret_bytes = secret.to_string();
 
         // Decode and validate the token
-        let decoding_key = DecodingKey::from_secret(secret.to_string().as_ref());
-        let token_data = decode::<Claims>(&token, &decoding_key, &jwt_validation())
+        let decoding_key = DecodingKey::from_secret(secret_bytes.as_ref());
+        let token_data = decode::<Claims>(&token, &decoding_key, jwt_validation())
             .map_err(|_| AppError::Unauthorized("Invalid token".to_string()))?;
 
         let claims = token_data.claims;

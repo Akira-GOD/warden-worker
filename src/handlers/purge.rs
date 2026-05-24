@@ -139,22 +139,21 @@ pub async fn purge_deleted_ciphers(env: &Env) -> Result<u32, worker::Error> {
 
         log::info!("Successfully purged {} soft-deleted cipher(s)", count);
 
-        // Update the affected users' updated_at to trigger client sync
-        for user_id in &affected_user_ids {
-            query!(
-                &db,
-                "UPDATE users SET updated_at = ?1 WHERE id = ?2",
-                now_str,
-                user_id
-            )?
+        // Batch-update all affected users in a single query to reduce DB round trips.
+        if !affected_user_ids.is_empty() {
+            let ids_json = serde_json::to_string(&affected_user_ids.iter().collect::<Vec<_>>())
+                .unwrap_or_default();
+            db.prepare(
+                "UPDATE users SET updated_at = ?1 WHERE id IN (SELECT value FROM json_each(?2))",
+            )
+            .bind(&[now_str.into(), ids_json.into()])?
             .run()
             .await?;
+            log::info!(
+                "Updated revision date for {} affected user(s)",
+                affected_user_ids.len()
+            );
         }
-
-        log::info!(
-            "Updated revision date for {} affected user(s)",
-            affected_user_ids.len()
-        );
     } else {
         log::info!("No soft-deleted ciphers to purge");
     }

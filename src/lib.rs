@@ -38,17 +38,22 @@ pub async fn main(
 
     let env = Arc::new(env);
 
-    // Allow all origins for CORS, which is typical for a public API like Bitwarden's.
-    let cors = CorsLayer::new()
-        .allow_methods(Any)
-        .allow_headers(Any)
-        .allow_origin(Any);
+    // Static CORS layer — built once per isolate lifetime via OnceLock.
+    static CORS: std::sync::OnceLock<CorsLayer> = std::sync::OnceLock::new();
+    let cors = CORS
+        .get_or_init(|| {
+            CorsLayer::new()
+                .allow_methods(Any)
+                .allow_headers(Any)
+                .allow_origin(Any)
+        })
+        .clone();
 
     // Attachment uploads/downloads are handled in entry.js for zero-copy streaming,
     // so we can use a conservative body limit here (5MB) for regular API requests.
     const BODY_LIMIT: usize = 5 * 1024 * 1024;
 
-    let mut app = router::api_router((*env).clone())
+    let mut app = router::api_router(env)
         .layer(Extension(BaseUrl(base_url)))
         .layer(cors)
         .layer(DefaultBodyLimit::max(BODY_LIMIT));

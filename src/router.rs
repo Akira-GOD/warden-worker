@@ -10,9 +10,7 @@ use crate::handlers::{
     import, meta, sync, twofactor, webauth,
 };
 
-pub fn api_router(env: Env) -> Router {
-    let app_state = Arc::new(env);
-
+pub fn api_router(env: Arc<Env>) -> Router {
     Router::new()
         // Identity/Auth routes
         .route("/identity/accounts/prelogin", post(accounts::prelogin))
@@ -210,5 +208,5 @@ pub fn api_router(env: Env) -> Router {
         )
         .route("/api/two-factor/get-recover", post(twofactor::get_recover))
         .route("/api/two-factor/recover", post(twofactor::recover))
-        .with_state(app_state)
+        .with_state(env)
 }

@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use axum::{extract::DefaultBodyLimit, Extension};
 use tower_http::cors::{Any, CorsLayer};
 use tower_service::Service;
@@ -39,17 +41,22 @@ impl DurableObject for HeavyDo {
             uri.authority().map(|a| a.as_str()).unwrap_or("localhost")
         );
 
-        // Allow all origins for CORS, matching the main worker.
-        let cors = CorsLayer::new()
-            .allow_methods(Any)
-            .allow_headers(Any)
-            .allow_origin(Any);
+        // Static CORS layer — built once per isolate lifetime via OnceLock.
+        static CORS: std::sync::OnceLock<CorsLayer> = std::sync::OnceLock::new();
+        let cors = CORS
+            .get_or_init(|| {
+                CorsLayer::new()
+                    .allow_methods(Any)
+                    .allow_headers(Any)
+                    .allow_origin(Any)
+            })
+            .clone();
 
         // Match the main worker's default body limit (5MB) for regular API requests.
         const BODY_LIMIT: usize = 5 * 1024 * 1024;
 
         // Reuse the existing router stack.
-        let mut app = router::api_router(self.env.clone())
+        let mut app = router::api_router(Arc::new(self.env.clone()))
             .layer(Extension(BaseUrl(base_url)))
             .layer(cors)
             .layer(DefaultBodyLimit::max(BODY_LIMIT));
